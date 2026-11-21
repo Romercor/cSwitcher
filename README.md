@@ -54,7 +54,7 @@ with its CLI (`claude` on PATH; `cswitch run` and priming use it), [uv](https://
 (`winget install astral-sh.uv`) and git. macOS is planned.
 
 ```powershell
-uv tool install git+https://github.com/<owner>/cSwitcher
+uv tool install git+https://github.com/Romercor/cSwitcher
 uv tool update-shell        # once, then open a new terminal
 ```
 
@@ -107,3 +107,7 @@ them are explained in the [guide](docs/guide.md#settings).
 
 Everything in detail, including overnight runs, Remote Control, priming and all settings:
 **[docs/guide.md](docs/guide.md)**.
+
+## License
+
+[MIT](LICENSE)
