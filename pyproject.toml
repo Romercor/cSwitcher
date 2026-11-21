@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cswitcher"
+dynamic = ["version"]
+description = "Keep long Claude Code sessions running across multiple subscriptions."
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+cswitch = "cswitch.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.dynamic]
+version = { attr = "cswitch.__version__" }
