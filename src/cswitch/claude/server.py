@@ -1,6 +1,6 @@
-"""Read-only questions to Anthropic, asked with the live login only when the local
-files can't answer: whose tokens are live, and fresh usage numbers. Uses the
-access token Claude Code keeps fresh and never refreshes tokens itself. The token
+"""Read-only questions to Anthropic when the local files can't answer: whose tokens
+are live, and fresh usage numbers. Uses a login's access token as it is (the live
+one Claude Code keeps fresh, or a saved one) and never refreshes tokens itself. The token
 is sent to api.anthropic.com only (redirects are refused), every call has a hard
 deadline because it may run while Claude Code's refresh lock is held, and any
 failure returns None so callers fall back to their local rules."""

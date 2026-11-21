@@ -5,9 +5,13 @@ login if the config allows it. A live account that differs from last time
 (e.g. a manual /login) counts as a switch, so earlier numbers can't be credited
 to it; the first account ever seen does not. Older numbers never replace newer
 ones. When Claude Code reports a usage limit, fresh numbers are fetched to see
-which window is full; if that is not possible, the 5-hour window is assumed full."""
+which window is full; if that is not possible, the 5-hour window is assumed full.
+The other accounts' numbers are refreshed now and then with their saved logins
+(`others_due`, `usage_of_saved`, `remember_others`)."""
 
 from __future__ import annotations
+
+from concurrent.futures import ThreadPoolExecutor
 
 from cswitch.accounts import switcher
 from cswitch.accounts.store import AccountStore
@@ -16,9 +20,11 @@ from cswitch.claude.home import ClaudeHome
 from cswitch.claude.login import Login
 from cswitch.claude.usage import Usage, Window, from_claude_cache
 from cswitch.config import Config
+from cswitch.errors import CswitchError
 from cswitch.rotation.state import State
 
 USAGE_MAX_AGE_SECONDS = 120
+OTHERS_INTERVAL_SECONDS = 1200
 FIVE_HOURS = 5 * 3600
 
 
@@ -37,10 +43,56 @@ def observe(home: ClaudeHome, store: AccountStore, state: State, config: Config,
     stale = usage is None or now - usage.fetched_at > USAGE_MAX_AGE_SECONDS
     if (fetch or stale) and config.ask_anthropic:
         usage = server.usage_of(live) or usage
-    known = state.usage.get(active)
-    if usage is not None and (known is None or usage.fetched_at >= known.fetched_at):
-        state.usage[active] = usage
+    remember(state, active, usage)
     return active
+
+
+def remember(state: State, name: str, usage: Usage | None) -> None:
+    known = state.usage.get(name)
+    if usage is not None and (known is None or usage.fetched_at >= known.fetched_at):
+        state.usage[name] = usage
+
+
+def looked_recently(state: State | None, now: float) -> bool:
+    return state is not None and 0 <= now - state.others_checked_at < OTHERS_INTERVAL_SECONDS
+
+
+def others_due(store: AccountStore, state: State, config: Config, now: float, skip: set[str | None],
+               force: bool = False) -> list[str]:
+    """The other saved accounts to ask Anthropic about now, at most every
+    OTHERS_INTERVAL_SECONDS unless `force`d (the time is recorded), so a reset Anthropic
+    grants early is noticed. Left out: those in `skip` (the live one, those being primed)
+    and any with a full 5-hour window, which a limit hit may have marked full against
+    Anthropic's numbers: only its reset lifts that."""
+    if not config.ask_anthropic or (not force and looked_recently(state, now)):
+        return []
+    state.others_checked_at = now
+    return [name for name in store.names() if name not in skip and not _five_hour_full(state, name, now)]
+
+
+def usage_of_saved(store: AccountStore, names: list[str]) -> dict[str, Usage]:
+    """The accounts' usage, asked in parallel with each saved login's access token while it
+    is still valid (it is never refreshed); accounts without an answer are left out."""
+    logins = {}
+    for name in names:
+        try:
+            logins[name] = store.load(name)
+        except (CswitchError, OSError):
+            continue
+    with ThreadPoolExecutor() as pool:
+        answers = dict(zip(logins, pool.map(server.usage_of, logins.values())))
+    return {name: usage for name, usage in answers.items() if usage is not None}
+
+
+def remember_others(state: State, found: dict[str, Usage], now: float) -> None:
+    for name, usage in found.items():
+        if not _five_hour_full(state, name, now):
+            remember(state, name, usage)
+
+
+def _five_hour_full(state: State, name: str, now: float) -> bool:
+    usage = state.usage.get(name)
+    return usage is not None and usage.five_hour.used_at(now) >= 100
 
 
 def mark_limit_hit(state: State, active: str, now: float) -> None:

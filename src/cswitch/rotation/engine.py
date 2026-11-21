@@ -1,7 +1,9 @@
 """The operations the command line, the hooks and the runner share: `check` (refresh
 the live account's usage and decide, for `cswitch status`), `tick` (one automatic
 step: throttled check, switch if needed, notice when every account has just been
-used up), `switch` (by hand: switch, remember when, so older usage numbers are never
+used up), `look_around` (refresh the other accounts' usage now and then, see
+monitor.others_due; Anthropic is asked with no lock held, so slow answers never hold up
+a hook), `switch` (by hand: switch, remember when, so older usage numbers are never
 credited to the new account, and remember the choice so automatic switching leaves
 it alone until `forget_hand_choice`) and `remove` (delete a saved account). All run
 under cSwitcher's own state lock (`locked_state`, also used by priming), so hooks
@@ -91,6 +93,20 @@ def tick(home: ClaudeHome, store: AccountStore, root: Path, now: float, *, limit
         newly_exhausted = decision.exhausted and not memory.exhausted
         memory.exhausted = decision.exhausted
     return Tick(Check(settings, memory, active, decision), switched, newly_exhausted, limit_marked, recently_switched)
+
+
+def look_around(store: AccountStore, root: Path, now: float, force: bool = False,
+                timeout: float = LOCK_TIMEOUT_SECONDS) -> None:
+    settings = config.load(root / config.CONFIG_FILE)
+    if not settings.ask_anthropic or (not force and monitor.looked_recently(_peek(root), now)):
+        return
+    with locked_state(root, timeout) as memory:
+        skip = being_primed(memory, now) | {memory.last_active}
+        names = monitor.others_due(store, memory, settings, now, skip, force)
+    found = monitor.usage_of_saved(store, names)
+    if found:
+        with locked_state(root, timeout) as memory:
+            monitor.remember_others(memory, {name: u for name, u in found.items() if store.exists(name)}, now)
 
 
 def switch(home: ClaudeHome, store: AccountStore, root: Path, name: str, now: float,

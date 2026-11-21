@@ -75,6 +75,7 @@ class RunnerTest(unittest.TestCase):
         self.patch(time, "time", side_effect=lambda: self.now)
         self.patch(time, "sleep", side_effect=self.sleep)
         self.engine_tick = self.patch(engine, "tick")
+        self.look_around = self.patch(engine, "look_around")
         self.patch(engine, "reserve_reached", return_value=False)
         self.notify = self.patch(notify, "notify")
 
@@ -149,6 +150,15 @@ class RunnerTest(unittest.TestCase):
         self.assertEqual(session.sent, ["fix it", "continue"])
         self.assertTrue(self.engine_tick.call_args.kwargs["limit_hit"])
         self.assertEqual(self.slept, [])
+
+    def test_a_failure_looking_at_other_accounts_never_stops_the_switch(self):
+        self.look_around.side_effect = OSError("lock busy")
+        self.engine_tick.return_value = self.tick(switched=True)
+        session = FakeSession([api_error("rate_limit"), failed("limit"), finished()])
+        self.assertEqual(self.run_task(session), 0)
+        self.assertEqual(session.sent, ["fix it", "continue"])
+        self.look_around.assert_called()
+        self.assertTrue(any("looking at the other accounts failed" in line for line in log.tail(self.root, 10)))
 
     def test_a_switch_a_hook_just_made_is_accepted(self):
         self.engine_tick.return_value = self.tick(hook_switched=True)

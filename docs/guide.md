@@ -48,7 +48,9 @@ other out. Power settings for waking (see priming below) are per computer.
 
 Nothing to do: while Claude works, cSwitcher checks the live account (at most once a
 minute) and switches before a threshold. Every open chat continues on the new account from
-its next message. If Claude hits a limit anyway, it switches at once.
+its next message. If Claude hits a limit anyway, it switches at once. After a reply (and
+in `cswitch run` and `cswitch status`), at most every 20 minutes, it also asks Anthropic
+about the other accounts used or primed in the last few hours, so an early reset is noticed.
 
 | Command | What it does |
 |---|---|
@@ -157,7 +159,7 @@ cswitch schedule install
 | `reserve` | `[]` | keep part of an account's week for yourself: `personal:30` stops automatic use at 70% weekly; when everything else is full, a run waits instead of using it (open chats keep going; hooks can't pause them). `cswitch switch personal` still uses it |
 | `strategy` | `priority` | `priority` (first usable in `order`) or `most_remaining` |
 | `check_interval_seconds` | `60` | minimum time between checks |
-| `ask_anthropic` | `true` | read usage and token ownership from Anthropic when local data is unclear |
+| `ask_anthropic` | `true` | read usage and token ownership from Anthropic when local data is unclear, and the other accounts' usage now and then |
 | `notifications` | `true` | desktop notifications |
 | `remote_control_accounts` | `[]` | accounts where `run --remote-control` turns it on (empty: all) |
 | `usage_history` | `false` | keep `usage.csv` for analysing the switching later (see below) |

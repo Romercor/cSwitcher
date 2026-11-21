@@ -1,6 +1,8 @@
 """Claude Code hook entry point. After tool calls and replies (throttled by
 check_interval_seconds) it checks the live account's usage and switches before a
 limit is reached; when a reply fails with a usage limit it switches at once.
+At the end of a reply, or after a limit, it then refreshes the other accounts'
+numbers when due, for the next check.
 It never raises and prints nothing, so Claude Code is never disturbed: what it
 did goes to the log, and only what needs the user becomes a notification.
 Claude Code's locks are waited for at most LOCK_TIMEOUT_SECONDS per set, which
@@ -42,6 +44,8 @@ def handle(event: str, stdin_text: str, home: ClaudeHome, store: AccountStore, r
         result = engine.tick(home, store, root, now, limit_hit=limit_hit, timeout=timeout)
         if result is not None:
             report.log_tick(root, event, result, limit_hit)
+        if event != "PostToolUse":
+            engine.look_around(store, root, now, timeout=timeout)
     except locks.Busy as e:
         _log_once(root, f"{event}: skipped, another cSwitcher or Claude Code step was busy ({e})")
     except Exception:

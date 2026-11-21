@@ -72,6 +72,62 @@ class EngineTest(FakeHomeTestCase):
         result = engine.tick(self.home, self.store, self.cswitch_root, now, limit_hit=True)
         self.assertEqual((result.switched, result.check.decision.switch_to), (True, "work"))
 
+    def test_an_account_reset_early_is_noticed_when_looking_around(self):
+        now = time.time()
+        used_up = Usage(Window(0, None), Window(100, now + 86400), now - 600)
+        state.save(self.cswitch_root / state.STATE_FILE,
+                   state.State({"work": used_up}, last_active="personal", last_switch_at=now - 600))
+        self.write_claude_cache("uuid-b", 95)
+        reset = Usage(Window(0, None), Window(0, now + 86400), now)
+        with mock.patch.object(server, "usage_of", return_value=reset) as usage_of:
+            self.assertFalse(engine.tick(self.home, self.store, self.cswitch_root, now).switched)
+            engine.look_around(self.store, self.cswitch_root, now + 30)
+            self.assertEqual(usage_of.call_args.args[0].refresh_token, "rt-a1")
+            usage_of.reset_mock()
+            engine.look_around(self.store, self.cswitch_root, now + 40)
+            usage_of.assert_not_called()
+            engine.look_around(self.store, self.cswitch_root, now + 50, force=True)
+            usage_of.assert_called_once()
+            result = engine.tick(self.home, self.store, self.cswitch_root, now + 60)
+        self.assertEqual((result.switched, result.check.decision.switch_to), (True, "work"))
+
+    def test_looking_around_does_nothing_when_anthropic_may_not_be_asked(self):
+        self.cswitch_root.mkdir(parents=True, exist_ok=True)
+        (self.cswitch_root / "config.toml").write_text("ask_anthropic = false\n", encoding="utf-8")
+        engine.look_around(self.store, self.cswitch_root, time.time(), force=True)
+        self.assertFalse((self.cswitch_root / state.STATE_FILE).exists())
+
+    def test_an_account_removed_meanwhile_is_not_remembered_again(self):
+        now = time.time()
+        state.save(self.cswitch_root / state.STATE_FILE, state.State(last_active="personal"))
+
+        def usage_of(_login):
+            engine.remove(self.store, self.cswitch_root, "work", now)
+            return Usage(Window(0, None), Window(0, None), now)
+        with mock.patch.object(server, "usage_of", side_effect=usage_of):
+            engine.look_around(self.store, self.cswitch_root, now)
+        self.assertNotIn("work", state.load(self.cswitch_root / state.STATE_FILE).usage)
+
+    def test_looking_around_skips_accounts_being_primed_and_keeps_a_limit_mark(self):
+        now = time.time()
+        path = self.cswitch_root / state.STATE_FILE
+        state.save(path, state.State(last_active="personal", priming={"work": now - 5}))
+        with mock.patch.object(server, "usage_of") as usage_of:
+            engine.look_around(self.store, self.cswitch_root, now, force=True)
+            usage_of.assert_not_called()
+        state.save(path, state.State(last_active="personal"))
+        self.write_claude_cache("uuid-a", 40)
+        engine.switch(self.home, self.store, self.cswitch_root, "work", now - 300)
+        engine.forget_hand_choice(self.cswitch_root)
+        (self.cswitch_root / "config.toml").write_text('order = ["work", "personal"]\n', encoding="utf-8")
+        self.assertTrue(engine.tick(self.home, self.store, self.cswitch_root, now, limit_hit=True).switched)
+        self.write_claude_cache("uuid-b", 10)
+        lower = Usage(Window(40, now + 3600), Window(60, None), now + 1260)
+        with mock.patch.object(server, "usage_of", return_value=lower):
+            engine.look_around(self.store, self.cswitch_root, now + 1260)
+            result = engine.tick(self.home, self.store, self.cswitch_root, now + 1270)
+        self.assertEqual((result.check.active, result.switched), ("personal", False))
+
     def test_the_fallback_after_a_limit_still_keeps_the_reserve(self):
         now = time.time()
         (self.cswitch_root / "config.toml").write_text('reserve = ["work:30"]\n', encoding="utf-8")

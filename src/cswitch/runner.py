@@ -211,14 +211,19 @@ def _wait_for_room(home: ClaudeHome, store: AccountStore, root: Path, show: Call
 
 def _tick(home: ClaudeHome, store: AccountStore, root: Path, limit_hit: bool = False,
           force: bool = False) -> engine.Tick | None:
-    """One engine check; a failure is logged and the run carries on, as the hooks do."""
+    """One engine check, then a refresh of the other accounts' numbers when due, for the
+    next check; a failure is logged and the run carries on, as the hooks do."""
+    result = None
     try:
         result = engine.tick(home, store, root, time.time(), limit_hit=limit_hit, force=force)
     except Exception as e:
         log.write(root, f"run: check failed: {type(e).__name__}: {e}")
-        return None
     if result is not None:
         report.log_tick(root, "run", result, limit_hit)
+    try:
+        engine.look_around(store, root, time.time())
+    except Exception as e:
+        log.write(root, f"run: looking at the other accounts failed: {type(e).__name__}: {e}")
     return result
 
 

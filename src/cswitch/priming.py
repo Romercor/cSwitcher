@@ -34,7 +34,7 @@ from cswitch.claude.login import Login
 from cswitch.claude.usage import Usage
 from cswitch.errors import CswitchError
 from cswitch.files import locks
-from cswitch.rotation import engine, policy, state
+from cswitch.rotation import engine, monitor, policy, state
 
 PROMPT = "Reply with just: OK"
 MODEL = "haiku"
@@ -170,9 +170,7 @@ def _finish(root: Path, account: str, started: float | None = None, usage: Usage
         memory.priming.pop(account, None)
         if started is not None:
             memory.primed_at[account] = started
-        known = memory.usage.get(account)
-        if usage is not None and (known is None or usage.fetched_at >= known.fetched_at):
-            memory.usage[account] = usage
+        monitor.remember(memory, account, usage)
 
 
 def _ask_live(home: ClaudeHome, root: Path) -> Login:

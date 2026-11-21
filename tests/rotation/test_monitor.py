@@ -106,6 +106,47 @@ class MonitorTest(FakeHomeTestCase):
         self.log_in("uuid-unknown", "x1")
         self.assertIsNone(self.observe())
 
+    def due(self, ask_anthropic: bool = True, force: bool = False, skip: set | None = None) -> list[str]:
+        return monitor.others_due(self.store, self.memory, Config(ask_anthropic=ask_anthropic), self.now,
+                                  {"personal"} if skip is None else skip, force)
+
+    def test_other_accounts_are_due_at_most_every_interval_unless_forced(self):
+        self.assertEqual(self.due(), ["work"])
+        self.now += monitor.OTHERS_INTERVAL_SECONDS - 1
+        self.assertEqual(self.due(), [])
+        self.assertEqual(self.due(force=True), ["work"])
+        self.now += monitor.OTHERS_INTERVAL_SECONDS
+        self.assertEqual(self.due(), ["work"])
+        self.memory.others_checked_at = self.now + 3600
+        self.assertEqual(self.due(), ["work"])
+
+    def test_no_account_is_due_when_not_allowed_skipped_or_marked_full(self):
+        self.assertEqual(self.due(ask_anthropic=False), [])
+        self.assertEqual(self.due(skip={"personal", "work"}, force=True), [])
+        self.memory.usage["work"] = Usage(Window(100, self.now + 60), Window(10, None), self.now - 600)
+        self.assertEqual(self.due(force=True), [])
+        self.now += 61
+        self.assertEqual(self.due(force=True), ["work"])
+
+    def test_saved_logins_are_asked_and_only_answers_kept(self):
+        answer = Usage(Window(0, None), Window(0, None), self.now)
+        self.usage_of.side_effect = lambda login: answer if login.refresh_token == "rt-a1" else None
+        self.assertEqual(monitor.usage_of_saved(self.store, ["work", "personal", "missing"]), {"work": answer})
+        self.assertEqual(self.usage_of.call_count, 2)
+
+    def test_a_broken_saved_account_is_skipped(self):
+        (self.store.accounts_dir / "work.json").write_text("{broken", encoding="utf-8")
+        self.assertEqual(monitor.usage_of_saved(self.store, ["work"]), {})
+        self.usage_of.assert_not_called()
+
+    def test_answers_about_others_never_lift_a_full_five_hour_window_or_replace_newer_numbers(self):
+        marked = Usage(Window(100, self.now + 3600), Window(10, None), self.now - 600)
+        newer = Usage(Window(20, None), Window(10, None), self.now)
+        self.memory.usage.update(work=marked, personal=newer)
+        lower = Usage(Window(40, self.now + 3600), Window(10, None), self.now - 1)
+        monitor.remember_others(self.memory, {"work": lower, "personal": lower}, self.now)
+        self.assertEqual((self.memory.usage["work"], self.memory.usage["personal"]), (marked, newer))
+
 
 class StateFileTest(FakeHomeTestCase):
     def setUp(self):
@@ -114,7 +155,7 @@ class StateFileTest(FakeHomeTestCase):
 
     def test_round_trip(self):
         memory = state.State({"team": Usage(Window(1, 2), Window(3, None), 4)}, "team", 5.0, 6.0, True, "team",
-                             {"work": 7.0}, {"team": 8.0})
+                             {"work": 7.0}, {"team": 8.0}, 9.0)
         state.save(self.path, memory)
         self.assertEqual(state.load(self.path), memory)
 

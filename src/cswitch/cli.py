@@ -60,6 +60,7 @@ def cmd_status(args: argparse.Namespace, home: ClaudeHome, store: AccountStore) 
         print("No saved accounts. Log in to Claude Code and run 'cswitch add <name>'.")
         return
     now = time.time()
+    engine.look_around(store, cswitch_home(), now, force=True)
     result = engine.check(home, store, cswitch_home(), now)
     for name in policy.ordered(names, result.settings):
         usage = result.memory.usage.get(name)

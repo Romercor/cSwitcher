@@ -52,6 +52,15 @@ class HooksTest(FakeHomeTestCase):
         self.assertEqual(self.live_refresh_token(), "rt-b1")
         self.assertEqual(self.log_text(), "")
 
+    def test_other_accounts_are_looked_at_after_a_reply_or_a_limit_never_mid_work(self):
+        with (mock.patch.object(engine, "tick", return_value=None),
+              mock.patch.object(engine, "look_around") as look_around):
+            self.hook("PostToolUse")
+            look_around.assert_not_called()
+            self.hook("Stop")
+            self.hook("StopFailure", {"error": "rate_limit"})
+        self.assertEqual(look_around.call_count, 2)
+
     def test_checks_are_throttled(self):
         self.write_claude_cache("uuid-b", 50)
         self.hook("PostToolUse")

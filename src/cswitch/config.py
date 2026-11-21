@@ -47,8 +47,9 @@ strategy = "priority"
 # Minimum seconds between usage checks while Claude works on a long task.
 check_interval_seconds = 60
 
-# Ask Anthropic (read-only, with the live login only) when local data is unclear:
-# whose tokens are live, and fresh usage numbers when Claude Code's own are stale.
+# Ask Anthropic (read-only, never refreshing a login) when local data is unclear:
+# whose tokens are live, fresh usage numbers when Claude Code's own are stale, and
+# now and then the other accounts' usage with their saved logins while still valid.
 ask_anthropic = true
 
 # Desktop notifications: every account used up, `cswitch run` finished or stopped.
