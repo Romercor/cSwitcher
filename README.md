@@ -78,7 +78,7 @@ never copied, you log in once per account there.
 |---|---|
 | `cswitch setup [--config FILE]` | guided setup; `--config` takes the settings from another computer |
 | `cswitch status` | usage per account and what cSwitcher would do |
-| `cswitch run "TASK"` | work on a task unattended; options: `--remote-control`, `--permission-mode MODE` (default `acceptEdits`), Claude Code options after `--` |
+| `cswitch run "TASK"` | work on a task unattended; options: `--remote-control`, `--permission-mode MODE` (default `acceptEdits`), `--background-hours H` (wait for long background jobs, default 4), Claude Code options after `--` |
 | `cswitch run --resume ID` | continue a stopped run (from the same folder) |
 | `cswitch log [-n LINES]` | recent switches, primes and runs |
 | `cswitch switch NAME` | switch by hand (kept until it nears a limit) |

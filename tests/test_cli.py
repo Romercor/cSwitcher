@@ -175,6 +175,16 @@ class CliTest(FakeHomeTestCase):
         self.assertEqual(claude_args[2:4], ["--append-system-prompt", cli.runner.UNATTENDED])
         self.assertEqual(claude_args[4:], ["--model", "opus"])
         self.assertIn("from this folder with: cswitch run --resume", out)
+        self.assertEqual(run.call_args.args[6], cli.runner.BACKGROUND_SECONDS)
+
+    def test_run_takes_how_long_to_wait_for_background_work(self):
+        self.add_two_accounts()
+        with mock.patch.object(cli.runner, "run", return_value=0) as run:
+            self.run_cli("run", "simulate", "--background-hours", "1.5")
+            self.assertEqual(run.call_args.args[6], 5400)
+            for bad in ("0", "-1", "nan", "inf", "soon"):
+                with self.subTest(bad=bad), self.assertRaises(SystemExit):
+                    self.run_cli("run", "simulate", "--background-hours", bad)
 
     def test_run_with_remote_control_wraps_the_session(self):
         self.add_two_accounts()

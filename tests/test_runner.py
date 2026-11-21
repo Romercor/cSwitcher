@@ -41,9 +41,10 @@ def rate_limit(status: str, window: str = "five_hour") -> dict:
     return {"type": "rate_limit_event", "rate_limit_info": {"status": status, "rateLimitType": window}}
 
 
-def background(*statuses: str) -> dict:
+def background(*descriptions: str) -> dict:
+    """What Claude Code reports: the tasks still running, without a status; finished ones drop out."""
     return {"type": "system", "subtype": "background_tasks_changed",
-            "tasks": [{"description": "task", "status": s} for s in statuses]}
+            "tasks": [{"task_id": f"t{i}", "description": d} for i, d in enumerate(descriptions)]}
 
 
 IDLE = {"type": IDLE_EVENT}
@@ -128,20 +129,82 @@ class RunnerTest(unittest.TestCase):
         self.assertIn("2 actions were refused: Bash", self.notify.call_args.args[1])
 
     def test_finishes_once_background_work_is_done_and_nothing_new_starts(self):
-        session = FakeSession([background("running"), finished("waiting"), background("completed"), IDLE])
+        session = FakeSession([background("task"), finished("waiting"), background(), IDLE])
         self.assertEqual(self.run_task(session), 0)
         self.assertEqual(session.sent, ["fix it"])
         self.assertEqual(session.waits[-1], runner.GRACE_SECONDS)
 
     def test_a_new_turn_after_background_work_is_followed_to_its_end(self):
-        session = FakeSession([background("running"), finished("waiting"), background("completed"),
+        session = FakeSession([background("task"), finished("waiting"), background(),
                                said("reading the output"), used("Read"), finished("all done")])
         self.assertEqual(self.run_task(session), 0)
         self.assertIn("all done", log.tail(self.root, 1)[0])
+        self.assertEqual(session.waits[2], runner.BACKGROUND_SECONDS)
 
-    def test_background_work_that_never_ends_still_finishes_after_silence(self):
-        self.assertEqual(self.run_task(FakeSession([background("running"), finished("serving"), IDLE])), 0)
-        self.assertIn("background work still running", log.tail(self.root, 1)[0])
+    def test_long_background_work_is_waited_for_without_restarting_the_clock(self):
+        def events():
+            yield background("task")
+            yield finished("simulation started")
+            self.now += 3600
+            yield background("task")
+            yield background()
+            yield said("reading the results")
+            yield finished("simulation done")
+        session = FakeSession(events())
+        self.assertEqual(self.run_task(session), 0)
+        self.assertEqual(session.waits[2:5], [runner.BACKGROUND_SECONDS, runner.BACKGROUND_SECONDS - 3600,
+                                              runner.GRACE_SECONDS])
+        self.assertIn("simulation done", log.tail(self.root, 1)[0])
+
+    def test_background_work_still_running_at_the_limit_is_stopped_and_reported(self):
+        session = FakeSession([background("task"), finished("serving"), IDLE])
+        self.assertEqual(runner.run("fix it", lambda resume: session, None, None, self.root, self.shown.append,
+                                    background_seconds=600), 1)
+        self.assertEqual(session.waits[-1], 600)
+        self.assertTrue(session.closed)
+        self.assertIn("background work stopped", self.notified())
+        self.assertIn("ended, background work stopped: still running 10 min after Claude's last reply: task. "
+                      "Last reply: serving",
+                      log.tail(self.root, 1)[0])
+        self.assertIn("[cswitch] waiting up to 10 min for: task", self.shown)
+
+    def test_background_work_is_remembered_across_a_failed_turn_of_the_same_session(self):
+        session = FakeSession([used("Bash", command="simulate"), background("task"), failed("API Error", status=529),
+                               said("the simulation is still running"), finished("waiting for it"),
+                               background(), said("reading the results"), finished("all done")])
+        self.assertEqual(self.run_task(session), 0)
+        self.assertEqual(session.sent, ["fix it", "continue"])
+        self.assertIn("all done", log.tail(self.root, 1)[0])
+        self.assertIn(runner.BACKGROUND_SECONDS, session.waits)
+
+    def test_a_restart_forgets_background_work_and_tells_claude_it_was_stopped(self):
+        silent = FakeSession([background("sim"), used("Bash", command="simulate"), IDLE])
+        restarted = FakeSession([finished("done")])
+        self.assertEqual(self.run_task(silent, restarted), 0)
+        self.assertNotIn(runner.BACKGROUND_SECONDS, restarted.waits)
+        self.assertEqual(restarted.sent, ["continue (a restart stopped your background tasks; "
+                                          "start again what is still needed: sim)"])
+        self.assertTrue(any("the restart stopped background work: sim" in line for line in log.tail(self.root, 10)))
+
+    def test_stopping_at_the_reserve_tells_claude_its_background_work_was_stopped(self):
+        self.patch(engine, "reserve_reached", return_value=True)
+        self.engine_tick.return_value = self.tick(switched=True)
+        working, resumed = FakeSession([background("sim"), used("Read")]), FakeSession([finished()])
+        self.assertEqual(self.run_task(working, resumed), 0)
+        self.assertIn("a restart stopped your background tasks", resumed.sent[0])
+
+    def test_only_tasks_still_running_count(self):
+        self.assertEqual(runner._running([{"description": "sim"}, {"status": "completed", "description": "old"},
+                                          {"description": ""}, "junk"]), ("sim", "a background task"))
+        self.assertEqual(runner._running(None), ())
+
+    def test_a_turn_claude_code_wakes_claude_for_gets_the_full_silence_limit(self):
+        init = {"type": "system", "subtype": "init"}
+        session = FakeSession([background("task"), finished("started"), background(), init,
+                               said("reading the results"), finished("done")])
+        self.assertEqual(self.run_task(session), 0)
+        self.assertEqual(session.waits[3:5], [runner.GRACE_SECONDS, runner.SILENCE_SECONDS])
+        self.assertIn("done", log.tail(self.root, 1)[0])
 
     def test_usage_limit_switches_and_continues_at_once(self):
         self.engine_tick.return_value = self.tick(switched=True)

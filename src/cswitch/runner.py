@@ -10,7 +10,9 @@ GIVE_UP_SECONDS without progress or of failed account checks, or after MAX_RESTA
 restarts in a row. Progress means a
 tool call or a finished turn, never an error message. The run ends when a turn has
 finished, no background task is left and Claude starts nothing new within
-GRACE_SECONDS; the user is notified then, and whenever the run stops early."""
+GRACE_SECONDS; the user is notified then, and whenever the run stops early. Background
+work (e.g. a long job) still running when a turn has finished is waited for, at most
+`background_seconds`; work still running then is stopped and the run reports that."""
 
 from __future__ import annotations
 
@@ -33,12 +35,14 @@ from cswitch.rotation import engine
 
 CONTINUE = "continue"
 UNATTENDED = ("You are running unattended through cSwitcher: nobody will read or answer questions. "
-              "Never ask; make sensible decisions yourself and keep working until the task is completely done.")
+              "Never ask; make sensible decisions yourself and keep working until the task is completely done. "
+              "Before you finish, stop background processes you no longer need, such as dev servers.")
 FIRST_PAUSE_SECONDS = 30
 MAX_PAUSE_SECONDS = 30 * 60
 GIVE_UP_SECONDS = 6 * 3600
 MAX_RESTARTS = 5
 SILENCE_SECONDS = 30 * 60
+BACKGROUND_SECONDS = 4 * 3600
 GRACE_SECONDS = 30
 MAX_WAIT_SECONDS = 30 * 60
 RESET_MARGIN_SECONDS = 180
@@ -54,6 +58,7 @@ class Outcome(StrEnum):
     EXITED = "Claude Code exited"
     SILENT = "no activity"
     RESERVE = "reserve reached"
+    CUT_OFF = "background work stopped"
 
 
 RESTART_OUTCOMES = (Outcome.EXITED, Outcome.SILENT)
@@ -68,15 +73,17 @@ class Session(Protocol):
 @dataclass(frozen=True)
 class Turn:
     """How a turn ended. `started`: Claude wrote anything, so the task reached the
-    session and a restart resumes it; `progressed`: it called a tool or finished."""
+    session and a restart resumes it; `progressed`: it called a tool or finished;
+    `background`: what still runs in the background (Claude Code only reports changes)."""
     outcome: Outcome
     started: bool
     progressed: bool
     detail: str = ""
+    background: tuple[str, ...] = ()
 
 
 def run(task: str | None, start: Callable[[bool], Session], home: ClaudeHome, store: AccountStore,
-        root: Path, show: Callable[[str], None]) -> int:
+        root: Path, show: Callable[[str], None], background_seconds: float = BACKGROUND_SECONDS) -> int:
     """Work on `task`, or continue the session if None; `start(resume)` starts Claude.
     Returns the exit code. A usage limit straight after another one, with no progress
     in between, gets a pause before continuing, like any other failure."""
@@ -85,11 +92,20 @@ def run(task: str | None, start: Callable[[bool], Session], home: ClaudeHome, st
     first_turn = True
     stalled = restarts = 0
     last_progress = time.time()
+    background: tuple[str, ...] = ()
+    stopped: tuple[str, ...] = ()
     try:
         while True:
-            session.send_user(CONTINUE if in_session or task is None else task)
-            turn = _read_turn(session, show, lambda: engine.reserve_reached(root, time.time()))
-            in_session = in_session or turn.started
+            message = CONTINUE if in_session or task is None else task
+            if stopped:
+                message += (f" (a restart stopped your background tasks; start again what is still needed: "
+                            f"{', '.join(stopped)})")
+                say(root, show, f"the restart stopped background work: {', '.join(stopped)}")
+            session.send_user(message)
+            stopped = ()
+            turn = _read_turn(session, show, lambda: engine.reserve_reached(root, time.time()), background_seconds,
+                              background)
+            in_session, background = in_session or turn.started, turn.background
             if turn.progressed:
                 stalled, last_progress = 0, time.time()
             else:
@@ -98,6 +114,9 @@ def run(task: str | None, start: Callable[[bool], Session], home: ClaudeHome, st
             if turn.outcome is Outcome.DONE:
                 _finish(root, show, "finished", turn.detail)
                 return 0
+            if turn.outcome is Outcome.CUT_OFF:
+                _finish(root, show, "ended, background work stopped", turn.detail)
+                return 1
             if first_turn and turn.outcome is Outcome.EXITED and not turn.started:
                 _finish(root, show, "could not start Claude Code (see the message above)", turn.detail)
                 return 1
@@ -106,7 +125,7 @@ def run(task: str | None, start: Callable[[bool], Session], home: ClaudeHome, st
                 session.close()
                 say(root, show, f"{turn.outcome}: {turn.detail}")
                 _wait_for_room(home, store, root, show, _tick(home, store, root, force=True))
-                session, last_progress = start(in_session), time.time()
+                session, last_progress, background, stopped = start(in_session), time.time(), (), background
                 continue
             if turn.outcome is Outcome.LIMIT and _make_room(home, store, root, show):
                 last_progress = time.time()
@@ -119,7 +138,7 @@ def run(task: str | None, start: Callable[[bool], Session], home: ClaudeHome, st
             _pause(root, show, turn, stalled)
             if turn.outcome in RESTART_OUTCOMES:
                 session.close()
-                session = start(in_session)
+                session, background, stopped = start(in_session), (), background
     except Exception as e:
         _finish(root, show, "stopped by an error", str(e))
         raise
@@ -127,24 +146,38 @@ def run(task: str | None, start: Callable[[bool], Session], home: ClaudeHome, st
         session.close()
 
 
-def _read_turn(session: Session, show: Callable[[str], None], reserve_reached: Callable[[], bool]) -> Turn:
+def _read_turn(session: Session, show: Callable[[str], None], reserve_reached: Callable[[], bool],
+               background_seconds: float, background: tuple[str, ...]) -> Turn:
     """Show Claude's work until the turn ends: a failed result, a successful one once no
-    background task is left and Claude hasn't started another turn within GRACE_SECONDS,
-    or (checked at each tool call) the live account reaching its reserve."""
-    started = progressed = succeeded = settling = background = limit_signs = False
+    background task is left (those still running, starting with `background`, are waited
+    for at most `background_seconds`) and Claude hasn't started another turn within
+    GRACE_SECONDS, or (checked at each tool call) the live account reaching its reserve.
+    Claude Code starts every turn, also one it wakes Claude for, with a system init event."""
+    started = progressed = succeeded = settling = limit_signs = False
     detail = ""
+    background_until = 0.0
 
     def end(outcome: Outcome, text: str) -> Turn:
-        return Turn(outcome, started, progressed, text)
+        return Turn(outcome, started, progressed, text, background)
 
-    while (event := session.next_event(GRACE_SECONDS if settling else SILENCE_SECONDS)) is not None:
+    def silence() -> float:
+        if settling:
+            return GRACE_SECONDS
+        return max(0.0, background_until - time.time()) if succeeded else SILENCE_SECONDS
+
+    while (event := session.next_event(silence())) is not None:
         kind, subtype = event.get("type"), event.get("subtype")
         if kind == IDLE_EVENT:
+            if settling:
+                return end(Outcome.DONE, detail)
             if succeeded:
-                return end(Outcome.DONE, detail if settling else f"{detail} (background work still running)")
+                return end(Outcome.CUT_OFF, f"still running {_duration(background_seconds)} after Claude's "
+                                            f"last reply: {', '.join(background)}. Last reply: {detail}")
             return end(Outcome.SILENT, f"silent for {SILENCE_SECONDS // 60} min")
         started = True
-        if kind == "assistant":
+        if kind == "system" and subtype == "init":
+            succeeded = settling = False
+        elif kind == "assistant":
             succeeded = settling = False
             limit_signs |= event.get("error") == "rate_limit"
             if not event.get("error") and _show_assistant(event, show):
@@ -154,7 +187,7 @@ def _read_turn(session: Session, show: Callable[[str], None], reserve_reached: C
         elif subtype == "permission_denied":
             show(f"  ! refused {event.get('tool_name') or 'an action'}: {event.get('message') or ''}".rstrip(": "))
         elif subtype == "background_tasks_changed":
-            background = _any_running(event.get("tasks"))
+            background = _running(event.get("tasks"))
             settling = succeeded and not background
         elif kind == "rate_limit_event":
             limit_signs |= _window_used_up(event.get("rate_limit_info"))
@@ -167,6 +200,8 @@ def _read_turn(session: Session, show: Callable[[str], None], reserve_reached: C
             limit_signs = False
             if not background:
                 return end(Outcome.DONE, detail)
+            background_until = time.time() + background_seconds
+            show(f"[cswitch] waiting up to {_duration(background_seconds)} for: {', '.join(background)}")
     return end(Outcome.EXITED, "the process ended")
 
 
@@ -249,9 +284,16 @@ def _window_used_up(info: object) -> bool:
     return False
 
 
-def _any_running(tasks: object) -> bool:
-    return isinstance(tasks, list) and any(
-        isinstance(task, dict) and task.get("status") not in FINISHED_TASKS for task in tasks)
+def _running(tasks: object) -> tuple[str, ...]:
+    """Descriptions of the background tasks still running."""
+    if not isinstance(tasks, list):
+        return ()
+    return tuple(str(task.get("description") or "a background task")[:80] for task in tasks
+                 if isinstance(task, dict) and task.get("status") not in FINISHED_TASKS)
+
+
+def _duration(seconds: float) -> str:
+    return f"{seconds / 3600:g} h" if seconds >= 3600 else f"{max(1, round(seconds / 60))} min"
 
 
 def _result_detail(event: dict) -> str:

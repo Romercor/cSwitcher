@@ -80,6 +80,10 @@ cswitch run "fix all failing tests and update the docs"
 - Retries errors and a crashed Claude with growing pauses; gives up (and notifies you)
   after 6 hours without progress, or when Claude crashes (or stays silent for 30 minutes)
   6 times in a row.
+- Waits for background work Claude started, e.g. a simulation running for hours, up to 4
+  hours after Claude's last reply (`--background-hours 6` for longer). Work still running
+  then (e.g. a dev server Claude forgot to stop) is stopped, and the run says so (exit code 1)
+  instead of reporting "finished".
 - Keeps the computer awake; stops when the task is done and notifies you.
 - Follows `order` and `reserve` even if you chose an account by hand with `cswitch switch`.
 - Uses your subscription logins: `ANTHROPIC_API_KEY` and similar overrides are not passed on to Claude.

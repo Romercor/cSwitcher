@@ -7,7 +7,8 @@ only turned on while an account that allows it is live (organizations can disabl
 it), checked every CHECK_SECONDS, which also paces retries after a refusal; a
 policy block is announced once and not retried on that account. The runner never
 sees these events, nor turns started while it was pausing (by the user, remotely):
-before the runner speaks, such a turn is let finish (up to DRAIN_SECONDS) and dropped."""
+before the runner speaks, such a turn is let finish (up to DRAIN_SECONDS) and dropped,
+except the latest list of background tasks, which the runner gets first."""
 
 from __future__ import annotations
 
@@ -29,6 +30,7 @@ class RemoteControl:
         self._pending: dict[str, str] = {}
         self._last_problem = ""
         self._checked_at = 0.0
+        self._background: dict | None = None
 
     def send_user(self, text: str) -> None:
         if self._pending:
@@ -40,6 +42,9 @@ class RemoteControl:
 
     def next_event(self, silence_seconds: float) -> dict | None:
         """Like Session.next_event, minus Remote Control's own events; checks the account every CHECK_SECONDS."""
+        if self._background is not None:
+            event, self._background = self._background, None
+            return event
         deadline = time.monotonic() + silence_seconds
         while True:
             if time.monotonic() - self._checked_at >= CHECK_SECONDS:
@@ -64,6 +69,8 @@ class RemoteControl:
                 self._check_account()
             elif not self._consume(event):
                 busy = event.get("type") != "result" and (busy or event.get("type") == "assistant")
+                if event.get("subtype") == "background_tasks_changed":
+                    self._background = event
 
     def _check_account(self) -> None:
         """Turn Remote Control on if an allowed account is live and it isn't on for that account yet."""

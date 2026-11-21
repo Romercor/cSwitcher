@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import sys
 import time
 import uuid
@@ -189,7 +190,7 @@ def cmd_run(args: argparse.Namespace, home: ClaudeHome, store: AccountStore) -> 
     log.write(root, f"run: session {session_id} started in {cwd}")
     try:
         with awake.keep_awake():
-            return runner.run(args.task, start, home, store, root, print)
+            return runner.run(args.task, start, home, store, root, print, args.background_hours * 3600)
     except KeyboardInterrupt:
         print(f"\nStopped; {resume_hint}")
         log.write(root, f"run: session {session_id} stopped by the user")
@@ -250,6 +251,13 @@ def _refresh_schedule(store: AccountStore) -> None:
 def cmd_log(args: argparse.Namespace, home: ClaudeHome, store: AccountStore) -> None:
     lines = log.tail(cswitch_home(), args.lines)
     print("\n".join(lines) if lines else "Nothing logged yet.")
+
+
+def _positive(text: str) -> float:
+    value = float(text)
+    if not 0 < value < math.inf:
+        raise argparse.ArgumentTypeError(f"must be a positive number, not {text}")
+    return value
 
 
 def _remote_control_account(home: ClaudeHome, store: AccountStore) -> str | None:
@@ -344,6 +352,9 @@ def build_parser() -> argparse.ArgumentParser:
                      help="follow the run from claude.ai/code or the Claude app (see remote_control_accounts)")
     run.add_argument("--permission-mode", default="acceptEdits",
                      help="what Claude may do without asking (default: acceptEdits, i.e. edit files)")
+    run.add_argument("--background-hours", type=_positive, default=runner.BACKGROUND_SECONDS / 3600, metavar="HOURS",
+                     help="how long to wait for background work (e.g. a long job) still running when Claude "
+                          "has finished; then it is stopped (default: %(default)g)")
     run.set_defaults(handler=cmd_run)
 
     prime = commands.add_parser("prime", help="start the 5-hour windows now with one tiny Haiku request each "

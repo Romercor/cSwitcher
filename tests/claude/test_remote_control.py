@@ -122,6 +122,16 @@ class RemoteControlTest(unittest.TestCase):
         self.assertEqual(wrapped.next_event(60), WORK)
         self.assertEqual(session.events, [])
 
+    def test_the_latest_background_task_list_survives_a_drain(self):
+        running = {"type": "system", "subtype": "background_tasks_changed", "tasks": [{"description": "sim"}]}
+        ended = {"type": "system", "subtype": "background_tasks_changed", "tasks": []}
+        woken_done = {"type": "result", "subtype": "success", "is_error": False, "result": "woken turn"}
+        wrapped, session = self.wrap(answer("cswitch-rc-1"), running, ended, WORK, woken_done, IDLE, WORK)
+        self.assertEqual(wrapped.next_event(0), running)
+        wrapped.send_user("continue")
+        self.assertEqual(wrapped.next_event(60), ended)
+        self.assertEqual(wrapped.next_event(60), WORK)
+
     def test_nothing_is_drained_before_remote_control_was_ever_turned_on(self):
         self.live = None
         wrapped, session = self.wrap(WORK)
