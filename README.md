@@ -1,206 +1,109 @@
 # cSwitcher
 
-Keeps long Claude Code sessions running when you have more than one Claude subscription.
-It switches Claude Code's login to another saved account before the 5-hour or weekly limit
-runs out, and `cswitch run` carries a task through the night by itself: it switches,
-waits for a reset when every account is used up, and continues.
+**Keep long Claude Code sessions running across several Claude subscriptions.**
+If you have more than one Claude plan (say a Team seat and a personal Pro), cSwitcher moves
+Claude Code to another of your accounts before a usage limit stops it, and carries
+unattended tasks through the night on its own.
 
-Works with the Claude Code CLI and the VS Code extension. Windows today; macOS is planned.
-Using several subscriptions must be in line with Anthropic's terms for your accounts.
+![cSwitcher in a terminal: an automatic switch in the log, account status and an overnight run](docs/demo.gif)
+
+## Features
+
+- **Switches before the limit.** Claude's usage comes in 5-hour windows plus a weekly limit.
+  At 90% of either (95% weekly), Claude Code moves to the first account in your order that has
+  room. Open chats continue on the new account with their next request.
+- **Unattended runs.** `cswitch run "task"` keeps Claude working: it switches, waits for a
+  reset when every account is used up, retries errors and notifies you when it's done.
+- **Your priorities.** Prefer one account, switch back to it once it has room, and keep part
+  of an account's week for yourself (`reserve`).
+- **Fresh windows sooner.** A 5-hour window starts with your first message. cSwitcher can
+  start each account's window early on a schedule (one tiny request, called *priming*), all
+  at once or staggered, so a reset is never far away.
+- **Set up in one go.** `cswitch setup` walks you through accounts and settings; a copy of
+  the config sets up a second computer.
+- **Transparent.** Every switch and prime is in `cswitch log`.
+
+## How it works
+
+![Animated diagram: cSwitcher switches Claude Code's login from 'work' to 'personal' at 90%, then back when 'work' resets](docs/how-it-works.gif)
+
+No program stays running in the background. Claude Code calls cSwitcher through *hooks*
+(commands it runs after each step, at the end of a reply and at a usage limit). cSwitcher
+checks the live account's usage, at most once a minute, and near a limit swaps Claude Code's
+saved login for another account's. Claude Code uses the new login with its next request.
+
+<details>
+<summary>Architecture</summary>
+
+```mermaid
+flowchart LR
+    chats["Claude Code chats<br/>(VS Code or terminal)"] -- "hook after each step" --> core
+    run["cswitch run<br/>(unattended task)"] -- "runs Claude Code" --> chats
+    sched["Windows Task Scheduler"] -- "cswitch prime" --> core
+    core["cSwitcher"] -- "check usage<br/>(read-only)" --> api[("Anthropic")]
+    core -- "swap login<br/>near a limit" --> login[("Claude Code login")]
+    login -. "next request uses<br/>the new account" .-> chats
+```
+
+</details>
 
 ## Install
 
-Needs Claude Code (for `cswitch run`, the CLI too: `claude --version` works in PowerShell)
-and [uv](https://docs.astral.sh/uv/) (`winget install astral-sh.uv`; it brings its own Python;
-`pipx` works the same with Python 3.11+). Installing from a repository URL also needs git.
+Requirements: Windows 10 or 11, two or more Claude plans, [Claude Code](https://claude.com/claude-code)
+with its CLI (`claude` on PATH; `cswitch run` and priming use it), [uv](https://docs.astral.sh/uv/)
+(`winget install astral-sh.uv`) and git. macOS is planned.
 
+```powershell
+uv tool install git+https://github.com/<owner>/cSwitcher
+uv tool update-shell        # once, then open a new terminal
 ```
-uv tool install git+<repository url>     # or: uv tool install <path to a copy of this folder>
-uv tool update-shell                     # once: puts cswitch on your PATH; open a new window
-```
-
-If an older install put `<cSwitcher folder>\.venv\Scripts` on your PATH, remove that entry, so
-the new `cswitch` is the one found.
-
-Updating later: `uv tool upgrade cswitcher` (or `uv tool install --reinstall <path>`).
 
 ## Set up
 
-Log in to Claude Code with one of your accounts (`/login`), then in PowerShell:
+Log in to Claude Code (`/login`) with one of your accounts, then run:
 
-```
+```powershell
 cswitch setup
 ```
 
-It saves that account, then each other one (it signs Claude Code out, you `/login` with the
-next account and press Enter; cancelling puts the previous login back), asks for the order,
-excluded accounts, reserve and priming (Enter keeps what is shown), installs the hooks and
-makes the scheduled priming tasks match. Running it again is safe.
-Start a new Claude Code chat (or reload the VS Code window) afterwards: hooks are read when
-a chat starts. `cswitch status` then shows every account's usage and what cSwitcher would do.
+The wizard saves this account, then asks you to `/login` with each of your other accounts in
+turn. It asks for your preferred order, an optional reserve and a priming schedule, and turns
+automatic switching on. Start a new Claude Code chat afterwards (hooks load when a chat
+starts). On another computer: `cswitch setup --config <copy of config.toml>`; logins are
+never copied, you log in once per account there.
 
-By hand instead: `cswitch add work`, `cswitch add personal --new` for each other account,
-`cswitch install`, `cswitch set ...`, `cswitch schedule install`.
-
-**Another computer:** install as above, then `cswitch setup --config <copy of config.toml>`
-(from `%USERPROFILE%\.cswitcher` on the old one; it holds no secrets) and log in to each account
-when asked. Logins can't be copied: two computers refreshing the same tokens would log each
-other out. Power settings for waking (see priming below) are per computer.
-
-## Everyday use
-
-Nothing to do: while Claude works, cSwitcher checks the live account (at most once a
-minute) and switches before a threshold. Every open chat continues on the new account from
-its next message. If Claude hits a limit anyway, it switches at once.
+## Commands
 
 | Command | What it does |
 |---|---|
-| `cswitch status` | usage per account and the current decision |
-| `cswitch list` | saved accounts (`*` = live) |
-| `cswitch switch <name>` | switch by hand; cSwitcher keeps that account until it nears a limit |
-| `cswitch log` | what cSwitcher did, e.g. overnight |
-| `cswitch prime [name...]` | start the 5-hour windows now (all accounts not excluded, or the named ones), so they reset earlier; one tiny Haiku request each, skipped where a window is running as far as cSwitcher last saw |
-| `cswitch exclude <name>` / `include <name>` | keep an account out of / back in automatic switching |
-| `cswitch remove <name>` | delete a saved account (its tokens are kept in backups) |
-| `cswitch config` | show all settings |
-| `cswitch set <setting> <value...>` | change a setting |
-| `cswitch uninstall` | remove the hooks again (saved accounts stay) |
+| `cswitch setup [--config FILE]` | guided setup; `--config` takes the settings from another computer |
+| `cswitch status` | usage per account and what cSwitcher would do |
+| `cswitch run "TASK"` | work on a task unattended; options: `--remote-control`, `--permission-mode MODE` (default `acceptEdits`), Claude Code options after `--` |
+| `cswitch run --resume ID` | continue a stopped run (from the same folder) |
+| `cswitch log [-n LINES]` | recent switches, primes and runs |
+| `cswitch switch NAME` | switch by hand (kept until it nears a limit) |
+| `cswitch add NAME [--new]` | save the logged-in account; `--new` signs out first for the next `/login` |
+| `cswitch list` / `cswitch remove NAME` | saved accounts / delete one |
+| `cswitch exclude NAME` / `include NAME` | keep an account out of / back in automatic switching |
+| `cswitch prime [NAME ...]` | start 5-hour windows now |
+| `cswitch schedule install` / `uninstall` | scheduled priming on / off (after `cswitch set prime_mode spread` or `together`) |
+| `cswitch config` / `cswitch set SETTING VALUE...` | show / change settings |
+| `cswitch install` / `uninstall` | turn the hooks on / off (`uninstall` also removes scheduled priming) |
 
-## Overnight: `cswitch run`
+`cswitch <command> -h` shows every option. Thresholds, order, reserve and priming are
+settings: `cswitch config` shows them, `cswitch set five_hour_threshold 85` changes one. All of
+them are explained in the [guide](docs/guide.md#settings).
 
-A VS Code chat stops when every account is used up, and nothing can type "continue" into
-it. For guaranteed nights, run the task from PowerShell instead:
+## Good to know
 
-```
-cd my-project
-cswitch run "fix all failing tests and update the docs"
-```
+- **Private by design.** Logins and settings stay in `%USERPROFILE%\.cswitcher` on your
+  computer, stored unencrypted like Claude Code's own login. Tokens only ever go to
+  Anthropic, through Claude Code itself or Anthropic's read-only usage and profile endpoints.
+  cSwitcher never uses `/logout`, which would revoke a login.
+- **Unofficial.** cSwitcher is not affiliated with Anthropic. Using several subscriptions
+  this way, and automated requests such as `cswitch run` and priming, must be allowed by
+  Anthropic's terms for your plans; check them before you rely on it.
+- **Removing it:** see the [guide](docs/guide.md#removing-it).
 
-- Switches before limits (with the hooks installed) and right after a limit is hit.
-- When every account is used up, waits until the first one resets, then continues.
-- Retries errors and a crashed Claude with growing pauses; gives up (and notifies you)
-  after 6 hours without progress, or when Claude crashes (or stays silent for 30 minutes)
-  6 times in a row.
-- Keeps the computer awake; stops when the task is done and notifies you.
-- Follows `order` and `reserve` even if you chose an account by hand with `cswitch switch`.
-- Uses your subscription logins: `ANTHROPIC_API_KEY` and similar overrides are not passed on to Claude.
-- Prints a session id at the start (also in `cswitch log`): Ctrl-C stops the run, and
-  `cswitch run --resume <id>` from the same folder continues it.
-
-**Permissions.** Nobody can approve actions at night, so Claude may only do what it is
-allowed in advance. The default `--permission-mode acceptEdits` lets it edit files in the
-project; anything else must be allowed explicitly, using Claude Code's own rule syntax:
-
-```
-cswitch run "fix the tests" -- --allowedTools "Bash(pytest *)" "Bash(git diff *)"
-```
-
-Refused actions don't stop the run (Claude works around them); they are shown as they
-happen and listed when the run ends. Options after `--` go to Claude Code. Only use
-`--permission-mode bypassPermissions` in a folder you can throw away: nobody is watching.
-
-Notifications ("every account is used up", "run finished") need Windows notifications on in
-*Settings → System → Notifications*, with **Windows PowerShell** allowed and Focus Assist off.
-
-**Remote Control.** `cswitch run --remote-control` lets you follow and steer the run from
-claude.ai/code or the Claude app. Remote Control belongs to the logged-in account: after
-each switch it comes back within about a minute of Claude working again, as a new session
-under the new account
-(the link is printed and logged), so to see it you must be signed in there as that account.
-Organizations (e.g. Team plans) can disable it; list only the accounts that allow it:
-`cswitch set remote_control_accounts personal other-pro`. The run itself keeps going on
-the other accounts, just without Remote Control.
-
-## Windows on a schedule: `cswitch prime`
-
-A 5-hour window starts with an account's first message. `cswitch prime` starts them
-earlier with one tiny Haiku request per account, so they reset sooner: an account primed
-at 05:00 still has its whole allowance at 08:00, and a fresh one at 10:00. On a schedule:
-
-```
-cswitch set prime_mode spread      # or: together
-cswitch set prime_from 04:40
-cswitch schedule install
-```
-
-- `together` keeps every account's window running: all are primed at `prime_from`, and
-  each again within about 15 minutes after it resets (e.g. 08:00-13:00, then 13:10-18:10).
-- `spread` primes one account at a time, in `order`, a window's length divided by the
-  number of accounts apart (3 accounts: about every 1 h 40 min), so resets come evenly
-  spaced and the wait when everything is used up is short. Start it early: with 3
-  accounts, `prime_from = "04:40"` has all three windows running by 08:00.
-- Two Windows scheduled tasks: one checks every 10 minutes between `prime_from` and
-  `prime_until` on `prime_days` (Mon-Fri by default) and primes what is due, so a late
-  start, a window you started yourself or a missed run (computer asleep or off) is taken
-  into account; the other wakes the computer for the morning's first prime(s) (later
-  primes happen when the computer is awake anyway). They run only while you are logged
-  on to Windows.
-- Waking a sleeping computer needs wake timers allowed in the power plan (`cswitch
-  schedule install` warns if they aren't). To allow them only when plugged in:
-  `powercfg /setacvalueindex SCHEME_CURRENT SUB_SLEEP RTCWAKE 1`, then
-  `powercfg /setactive SCHEME_CURRENT`.
-- `cswitch set`, `exclude`, `add` and `remove` update the tasks; after editing
-  `config.toml` by hand, run `cswitch schedule install` again. `cswitch schedule
-  uninstall` removes them. Excluded accounts and accounts whose week is used up are not
-  primed. Priming doesn't change weekly limits.
-- These are automated requests; on Pro plans, Anthropic's consumer terms only allow
-  automated access where they explicitly permit it, so decide for yourself.
-
-## Settings
-
-`cswitch config` shows them, `cswitch set` changes them (stored in
-`%USERPROFILE%\.cswitcher\config.toml`).
-
-| Setting | Default | Meaning |
-|---|---|---|
-| `order` | `[]` | preferred accounts first; the rest follow. With `priority`, cSwitcher switches back to an earlier account once it has room again (not from an account you chose by hand) |
-| `exclude` | `[]` | never switched to automatically |
-| `five_hour_threshold` | `90` | switch away at this 5-hour usage (%) |
-| `seven_day_threshold` | `95` | switch away at this weekly usage (%) |
-| `reserve` | `[]` | keep part of an account's week for yourself: `personal:30` stops automatic use at 70% weekly; when everything else is full, a run waits instead of using it (open chats keep going; hooks can't pause them). `cswitch switch personal` still uses it |
-| `strategy` | `priority` | `priority` (first usable in `order`) or `most_remaining` |
-| `check_interval_seconds` | `60` | minimum time between checks |
-| `ask_anthropic` | `true` | read usage and token ownership from Anthropic when local data is unclear |
-| `notifications` | `true` | desktop notifications |
-| `remote_control_accounts` | `[]` | accounts where `run --remote-control` turns it on (empty: all) |
-| `usage_history` | `false` | keep `usage.csv` for analysing the switching later (see below) |
-| `prime_mode` | `off` | scheduled priming: `off`, `together` or `spread` (see above) |
-| `prime_from` / `prime_until` | `08:00` / `20:00` | scheduled primes happen between these times |
-| `prime_days` | `["mon", ..., "fri"]` | days with scheduled priming |
-
-## How it works, and what it never does
-
-- A login is two files: `%USERPROFILE%\.claude\.credentials.json` (tokens) and
-  `oauthAccount` in `%USERPROFILE%\.claude.json`.
-  cSwitcher swaps them safely while Claude Code is running; a running Claude picks up the
-  new login on its next request.
-- Usage comes from Claude Code's own saved numbers, or (read-only, with the live login)
-  from Anthropic's usage endpoint.
-- `cswitch prime` runs Claude for another account in a temporary copy of that login (open
-  chats keep theirs) and saves refreshed tokens back. Automatic switching pauses while
-  it does, usually for a few seconds per account.
-- It never uses `/logout` (that revokes the token), never sends tokens anywhere except
-  Anthropic's own API, and keeps a backup of any tokens whose owner is uncertain.
-- Saved logins are unencrypted token files in `%USERPROFILE%\.cswitcher` (`accounts\`,
-  `backups\`), readable by anything running as your Windows user, just like Claude Code's
-  own `.credentials.json`. Activity, including setting changes, is in
-  `%USERPROFILE%\.cswitcher\log.txt`. With `usage_history` on, `usage.csv` gets a line whenever
-  an account's usage changes (time, account, live, 5-hour and weekly % and resets). Each file is
-  capped at about 1-2 MB plus one older file. Open a copy in Excel: Excel locks the file, and
-  lines can't be written meanwhile.
-- The `CSWITCH_HOME` environment variable moves cSwitcher's folder (set it permanently,
-  e.g. `setx CSWITCH_HOME D:\cswitcher`, because the hooks need it too); cSwitcher follows
-  `CLAUDE_CONFIG_DIR` if you set it for Claude Code.
-
-## Removing it
-
-`cswitch uninstall` (hooks and scheduled tasks), then `cswitch switch <your usual account>`,
-then `uv tool uninstall cswitcher` and delete `%USERPROFILE%\.cswitcher`.
-
-## Development
-
-```
-py -m venv .venv
-.venv\Scripts\pip install -e .
-.venv\Scripts\python -m unittest
-```
+Everything in detail, including overnight runs, Remote Control, priming and all settings:
+**[docs/guide.md](docs/guide.md)**.
