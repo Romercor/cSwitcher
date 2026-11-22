@@ -108,14 +108,37 @@ class RunnerTest(unittest.TestCase):
         return self.notify.call_args.args[0]
 
     def test_finishes_when_a_turn_completes(self):
-        session = FakeSession([said("Working on it"), used("Bash", command="pytest -q\nmore"), finished("all green")])
+        session = FakeSession([said("Working on it"), used("Bash", command="pytest -q\nmore"), finished("all green"),
+                               IDLE])
         self.assertEqual(self.run_task(session), 0)
         self.assertEqual(session.sent, ["fix it"])
+        self.assertEqual(session.waits[-1], runner.GRACE_SECONDS)
         self.assertIn("  > Bash pytest -q", self.shown)
         self.assertTrue(session.closed)
         self.engine_tick.assert_not_called()
         self.assertIn("finished", self.notified())
         self.assertIn("run: finished: all green", log.tail(self.root, 5)[-1])
+
+    def test_a_turn_woken_for_a_task_that_ended_during_the_last_one_is_followed(self):
+        init, notice = {"type": "system", "subtype": "init"}, {"type": "system", "subtype": "task_notification"}
+        session = FakeSession([background("waiter"), background(), finished("the waiter will fetch the results"),
+                               notice, init, said("judging the results"), finished("results judged"), IDLE])
+        self.assertEqual(self.run_task(session), 0)
+        self.assertEqual((session.sent, self.starts), (["fix it"], [False]))
+        self.assertIn("results judged", log.tail(self.root, 1)[0])
+
+    def test_background_work_reported_after_the_last_reply_is_waited_for(self):
+        session = FakeSession([finished("ended"), background("late"), background(), said("reading the output"),
+                               finished("all done"), IDLE])
+        self.assertEqual(self.run_task(session), 0)
+        self.assertEqual(session.waits[1:3], [runner.GRACE_SECONDS, runner.BACKGROUND_SECONDS])
+        self.assertIn("all done", log.tail(self.root, 1)[0])
+
+    def test_claude_exiting_after_its_last_reply_counts_as_finished(self):
+        session = FakeSession([finished("all green")])
+        self.assertEqual(self.run_task(session), 0)
+        self.assertEqual((session.sent, self.starts), (["fix it"], [False]))
+        self.assertIn("run: finished: all green", log.tail(self.root, 1)[0])
 
     def test_refused_actions_are_shown_as_they_happen(self):
         denied = {"type": "system", "subtype": "permission_denied", "tool_name": "Bash",

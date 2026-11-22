@@ -7,11 +7,11 @@ reaches its reserve (as the hooks see it), Claude is stopped and the run waits t
 same way instead of spending the reserve. Other failures, a crashed Claude and a Claude
 silent for SILENCE_SECONDS are retried after growing pauses. The run gives up after
 GIVE_UP_SECONDS without progress or of failed account checks, or after MAX_RESTARTS
-restarts in a row. Progress means a
-tool call or a finished turn, never an error message. The run ends when a turn has
-finished, no background task is left and Claude starts nothing new within
-GRACE_SECONDS; the user is notified then, and whenever the run stops early. Background
-work (e.g. a long job) still running when a turn has finished is waited for, at most
+restarts in a row. Progress means a tool call or a finished turn, never an error
+message. The run ends when a turn has finished, no background task is left and Claude
+starts nothing new within GRACE_SECONDS (a Claude that exits then has finished too);
+the user is notified then, and whenever the run stops early. Background work (e.g. a
+long job) still running when a turn has finished is waited for, at most
 `background_seconds`; work still running then is stopped and the run reports that."""
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ GIVE_UP_SECONDS = 6 * 3600
 MAX_RESTARTS = 5
 SILENCE_SECONDS = 30 * 60
 BACKGROUND_SECONDS = 4 * 3600
-GRACE_SECONDS = 30
+GRACE_SECONDS = 120
 MAX_WAIT_SECONDS = 30 * 60
 RESET_MARGIN_SECONDS = 180
 LIMIT_TEXT = re.compile(r"usage limit|hit your (?:\w+ )?limit|(?:5-hour|weekly|session) limit", re.IGNORECASE)
@@ -152,7 +152,8 @@ def _read_turn(session: Session, show: Callable[[str], None], reserve_reached: C
     background task is left (those still running, starting with `background`, are waited
     for at most `background_seconds`) and Claude hasn't started another turn within
     GRACE_SECONDS, or (checked at each tool call) the live account reaching its reserve.
-    Claude Code starts every turn, also one it wakes Claude for, with a system init event."""
+    Claude Code starts every turn, also one it wakes Claude for, with a system init event;
+    it may wake Claude even for a task that ended before the turn did."""
     started = progressed = succeeded = settling = limit_signs = False
     detail = ""
     background_until = 0.0
@@ -198,11 +199,10 @@ def _read_turn(session: Session, show: Callable[[str], None], reserve_reached: C
                 return end(Outcome.LIMIT if limit else Outcome.ERROR, detail)
             succeeded = progressed = True
             limit_signs = False
-            if not background:
-                return end(Outcome.DONE, detail)
-            background_until = time.time() + background_seconds
-            show(f"[cswitch] waiting up to {_duration(background_seconds)} for: {', '.join(background)}")
-    return end(Outcome.EXITED, "the process ended")
+            settling, background_until = not background, time.time() + background_seconds
+            if background:
+                show(f"[cswitch] waiting up to {_duration(background_seconds)} for: {', '.join(background)}")
+    return end(Outcome.DONE, detail) if settling else end(Outcome.EXITED, "the process ended")
 
 
 def _make_room(home: ClaudeHome, store: AccountStore, root: Path, show: Callable[[str], None]) -> bool:
