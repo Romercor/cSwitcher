@@ -24,6 +24,11 @@ def bridge(state: str, kind: str = "terminal") -> dict:
             "detail": "account changed"}
 
 
+def policy_disabled() -> dict:
+    return {"type": "system", "subtype": "bridge_state", "state": "policy_disabled",
+            "detail": "disabled by your organization"}
+
+
 class FakeSession:
     def __init__(self, clock: list[float], events: list[dict]):
         self.clock, self.events, self.sent, self.messages = clock, list(events), [], []
@@ -102,9 +107,22 @@ class RemoteControlTest(unittest.TestCase):
         self.assertFalse(any("ended" in line for line in self.said))
 
     def test_disabled_by_policy_is_announced_once_and_not_retried(self):
-        wrapped, session = self.wrap(answer("cswitch-rc-1"), bridge("policy_disabled", kind=""), IDLE, IDLE, WORK)
+        """What Claude Code sends for an organization that disables it: the bridge state, then a refusal."""
+        wrapped, session = self.wrap(policy_disabled(), answer("cswitch-rc-1", ok=False),
+                                     self.switch_to("other-pro"), IDLE, answer("cswitch-rc-2"),
+                                     self.switch_to("pro"), IDLE, IDLE, WORK)
         self.assertEqual(wrapped.next_event(5 * remote_control.CHECK_SECONDS), WORK)
-        self.assertEqual(self.requests(session), ["cswitch-rc-1"])
+        self.assertEqual(self.requests(session), ["cswitch-rc-1", "cswitch-rc-2"])
+        self.assertEqual([line for line in self.said if "'pro'" in line],
+                         ["Remote Control is disabled for 'pro': disabled by your organization"])
+
+    def test_a_policy_block_is_kept_across_restarts_and_either_event_order(self):
+        blocked: set[str] = set()
+        first = FakeSession(self.clock, [answer("cswitch-rc-1", ok=False), policy_disabled(), IDLE, WORK])
+        RemoteControl(first, lambda: self.live, "cswitch: project", self.said.append, blocked).next_event(120)
+        restarted = FakeSession(self.clock, [WORK])
+        RemoteControl(restarted, lambda: self.live, "cswitch: project", self.said.append, blocked).next_event(60)
+        self.assertEqual((len(first.sent), restarted.sent, blocked), (1, [], {"pro"}))
         self.assertEqual(sum("disabled for 'pro'" in line for line in self.said), 1)
 
     def test_the_reply_names_the_account_it_was_requested_for(self):

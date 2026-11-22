@@ -178,13 +178,14 @@ def cmd_run(args: argparse.Namespace, home: ClaudeHome, store: AccountStore) -> 
     claude_args = ["--permission-mode", args.permission_mode, "--append-system-prompt", runner.UNATTENDED,
                    *args.claude_args]
     resume_hint = f"continue later from this folder with: cswitch run --resume {session_id}"
+    blocked: set[str] = set()
 
     def start(resume: bool) -> runner.Session:
         session = headless.Session(session_id, resume, cwd, claude_args)
         if not args.remote_control:
             return session
         return RemoteControl(session, lambda: _remote_control_account(home, store), f"cswitch: {cwd.name}",
-                             lambda text: runner.say(root, print, text))
+                             lambda text: runner.say(root, print, text), blocked)
 
     print(f"Session {session_id} in {cwd}. Stop with Ctrl-C; {resume_hint}")
     log.write(root, f"run: session {session_id} started in {cwd}")

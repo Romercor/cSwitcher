@@ -5,7 +5,8 @@ bridge failure); it is then turned on again, as a new session under the new acco
 Other bridge failures are left to Claude, which recovers from them by itself. It is
 only turned on while an account that allows it is live (organizations can disable
 it), checked every CHECK_SECONDS, which also paces retries after a refusal; a
-policy block is announced once and not retried on that account. The runner never
+policy block is announced once and not retried on that account for the rest of the
+run, restarts included. The runner never
 sees these events, nor turns started while it was pausing (by the user, remotely):
 before the runner speaks, such a turn is let finish (up to DRAIN_SECONDS) and dropped,
 except the latest list of background tasks, which the runner gets first."""
@@ -23,10 +24,12 @@ DRAIN_SECONDS = 30 * 60
 
 class RemoteControl:
     def __init__(self, session: Session, allowed_account: Callable[[], str | None], name: str,
-                 say: Callable[[str], None]):
-        """Wrap `session`. `allowed_account()` names the live account if Remote Control may be used on it."""
+                 say: Callable[[str], None], blocked: set[str] | None = None):
+        """Wrap `session`. `allowed_account()` names the live account if Remote Control may be used on it;
+        `blocked` collects the accounts whose organization disables it, kept across restarts by the caller."""
         self._session, self._allowed_account, self._name, self._say = session, allowed_account, name, say
         self._enabled_for: str | None = None
+        self._blocked = set() if blocked is None else blocked
         self._pending: dict[str, str] = {}
         self._last_problem = ""
         self._checked_at = 0.0
@@ -76,7 +79,7 @@ class RemoteControl:
         """Turn Remote Control on if an allowed account is live and it isn't on for that account yet."""
         self._checked_at = time.monotonic()
         account = self._allowed_account()
-        if account is not None and account != self._enabled_for:
+        if account is not None and account != self._enabled_for and account not in self._blocked:
             self._enabled_for = account
             request_id = f"cswitch-rc-{len(self._pending) + 1}"
             self._pending[request_id] = account
@@ -95,12 +98,15 @@ class RemoteControl:
                 self._say(f"Remote Control on for '{account}': {(response.get('response') or {}).get('session_url')}")
             else:
                 self._enabled_for = None
-                self._problem(f"Remote Control unavailable for '{account}': {response.get('error')}")
+                if account not in self._blocked:
+                    self._problem(f"Remote Control unavailable for '{account}': {response.get('error')}")
             return True
         if event.get("type") == "system" and event.get("subtype") == "bridge_state":
             state = event.get("state")
-            if state == "policy_disabled":
-                self._problem(f"Remote Control is disabled for '{self._enabled_for}': {event.get('detail') or state}")
+            requested = next(reversed(self._pending.values()), None)
+            if state == "policy_disabled" and requested is not None:
+                self._blocked.add(requested)
+                self._problem(f"Remote Control is disabled for '{requested}': {event.get('detail') or state}")
             elif state == "failed" and event.get("failure_kind") == "terminal":
                 self._enabled_for = None
                 self._problem(f"Remote Control ended: {event.get('detail') or state}")
